@@ -22,12 +22,14 @@ def parse_excel(file_buffer):
     wb = load_workbook(file_buffer, read_only=True, data_only=True)
     counts = {topic: {"正面": 0, "負面": 0, "中立": 0} for topic in TOPICS}
     negatives = []
+    sheets_found = []
 
     for sheet_name in wb.sheetnames:
         ws = wb[sheet_name]
         rows = list(ws.iter_rows(values_only=True))
         current_topic = None
         col_map = {}
+        sheet_rows_counted = 0
 
         for row in rows:
             if not row or row[0] is None:
@@ -63,6 +65,7 @@ def parse_excel(file_buffer):
                 sentiment = str(sentiment_raw).strip()
                 if sentiment in ("正面", "負面", "中立"):
                     counts[current_topic][sentiment] += 1
+                    sheet_rows_counted += 1
                     if sentiment == "負面":
                         negatives.append({
                             "話題分類": current_topic,
@@ -74,8 +77,12 @@ def parse_excel(file_buffer):
                             "回文數": row[col_map.get("回文數", 5)],
                             "輿情內文": row[col_map.get("輿情內文", 6)],
                         })
+
+        if current_topic:
+            sheets_found.append(f"{sheet_name}（{current_topic}）: {sheet_rows_counted} 筆")
+
     wb.close()
-    return counts, negatives
+    return counts, negatives, sheets_found
 
 
 def write_summary_sheet(ws, total_counts, month):
@@ -144,7 +151,7 @@ col1, col2 = st.columns(2)
 with col1:
     year = st.number_input("年份", min_value=2020, max_value=2099, value=2026)
 with col2:
-    month = st.number_input("月份", min_value=1, max_value=12, value=2)
+    month = st.number_input("月份", min_value=1, max_value=12, value=3)
 
 uploaded_files = st.file_uploader(
     "上傳當月所有每日 Excel 檔（可一次多選）",
@@ -158,6 +165,7 @@ if uploaded_files:
     if st.button("開始彙整", type="primary", use_container_width=True):
         all_counts = []
         all_negatives = []
+        all_debug = []
 
         progress = st.progress(0)
         status = st.empty()
@@ -165,9 +173,14 @@ if uploaded_files:
         for i, f in enumerate(uploaded_files):
             status.text(f"解析中：{f.name}")
             buf = io.BytesIO(f.read())
-            counts, negatives = parse_excel(buf)
+            counts, negatives, sheets_found = parse_excel(buf)
             all_counts.append(counts)
             all_negatives.extend(negatives)
+            all_debug.append({
+                "檔案": f.name,
+                "工作表": sheets_found,
+                "小計": sum(sum(counts[t].values()) for t in TOPICS)
+            })
             progress.progress((i + 1) / len(uploaded_files))
 
         status.text("產出報表中...")
@@ -191,6 +204,13 @@ if uploaded_files:
         status.empty()
 
         st.success("彙整完成！")
+
+        # 顯示每個檔案的統計明細
+        with st.expander("📋 各檔案統計明細（點開確認）"):
+            for d in all_debug:
+                total_rows = d["小計"]
+                sheets_str = "、".join(d["工作表"]) if d["工作表"] else "⚠️ 未偵測到任何話題"
+                st.write(f"**{d['檔案']}** — 共 {total_rows} 筆 | {sheets_str}")
 
         filename = f"兆豐銀行輿情_Y{str(year)[2:]}_{month:02d}月彙整.xlsx"
         st.download_button(
